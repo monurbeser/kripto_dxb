@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kripto Sinyal Tarayıcı</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141925; --panel2:#1b2230; --line:#222b3d;
+    --txt:#e6e9ef; --muted:#8b94a7; --green:#22c55e; --red:#ef4444; --neutral:#5b6577;
+    --accent:#3b82f6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+  h1{font-size:17px;margin:0;font-weight:650}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-left:auto}
+  select,input,button{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px 11px;font-size:13px}
+  button{cursor:pointer;background:var(--accent);border-color:var(--accent);font-weight:600}
+  button.ghost{background:var(--panel2);border-color:var(--line)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .meta{padding:10px 22px;color:var(--muted);font-size:12.5px;display:flex;gap:18px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+  .wrap{padding:14px 22px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:600;cursor:default;position:sticky;top:0;background:var(--bg)}
+  tr:hover td{background:var(--panel)}
+  .sig{font-weight:700;padding:3px 9px;border-radius:6px;font-size:12px}
+  .LONG{color:var(--green);background:rgba(34,197,94,.12)}
+  .SHORT{color:var(--red);background:rgba(239,68,68,.12)}
+  .NEUTRAL{color:var(--neutral)}
+  .pos{color:var(--green)} .neg{color:var(--red)}
+  .bar{display:inline-block;height:7px;border-radius:4px;background:var(--accent)}
+  .note{margin:16px 22px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:12.5px}
+  .loading{padding:40px;text-align:center;color:var(--muted)}
+  .err{color:var(--red)}
+  code{background:var(--panel2);padding:2px 6px;border-radius:5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 Kripto Sinyal Tarayıcı <span style="color:var(--muted);font-weight:400">· Binance USDT-M Futures</span></h1>
+  <div class="controls">
+    <select id="tf">
+      <option value="15m">15m</option>
+      <option value="1h">1h</option>
+      <option value="4h" selected>4h</option>
+      <option value="1d">1d</option>
+    </select>
+    <select id="filter">
+      <option value="all">Tümü</option>
+      <option value="signals" selected>Sadece sinyaller</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px">
+      <input type="checkbox" id="auto" style="width:auto"> Oto (60sn)
+    </label>
+    <button id="scan">Tara</button>
+  </div>
+</header>
+
+<div class="meta" id="meta">API'ye bağlanılıyor…</div>
+<div class="wrap"><div id="content" class="loading">Yükleniyor…</div></div>
+
+<div class="note">
+  <b>Mantık:</b> En volatil coinler 24s değişim + likidite filtresine göre seçilir; her birinde EMA(9/21/50), RSI, MACD, ADX ve ATR hesaplanır.
+  ADX ≥ eşik <i>ve</i> konfluans skoru ≥ eşik olduğunda LONG/SHORT üretilir. SL/TP ATR tabanlıdır, kaldıraç önerisi oynaklıkla ters orantılıdır.
+  <br><b>⚠️ Uyarı:</b> Bu bir yatırım tavsiyesi değildir. Kaldıraçlı işlem sermayenin tamamını kaybettirebilir; sinyalleri kendin doğrula.
+  <br><span style="opacity:.7">API adresi: <code id="apiUrl"></code> — farklı yerde barındırıyorsan URL'ye <code>?api=https://senin-projen.vercel.app/api/scan</code> ekleyebilirsin.</span>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+// API tabanı: ?api= ile override, yoksa aynı origin /api/scan
+const API_BASE = params.get("api") || "/api/scan";
+document.getElementById("apiUrl").textContent = API_BASE;
+
+const $ = (id) => document.getElementById(id);
+let timer = null;
+
+function fmtNum(n){ if(n==null) return "—"; const a=Math.abs(n); return a>=1?n.toLocaleString("en-US",{maximumFractionDigits:2}):n.toPrecision(4); }
+function fmtVol(v){ if(v==null) return "—"; if(v>=1e9) return (v/1e9).toFixed(1)+"B"; if(v>=1e6) return (v/1e6).toFixed(1)+"M"; return (v/1e3).toFixed(0)+"K"; }
+
+async function scan(){
+  const tf = $("tf").value;
+  $("scan").disabled = true;
+  $("content").innerHTML = '<div class="loading">Taranıyor… (50 coin için klines çekiliyor, ~5-15 sn)</div>';
+  $("meta").textContent = "Taranıyor…";
+  try{
+    const url = API_BASE + (API_BASE.includes("?")?"&":"?") + "interval=" + encodeURIComponent(tf);
+    const r = await fetch(url);
+    const data = await r.json();
+    if(!data.ok) throw new Error(data.error || "Bilinmeyen hata");
+    render(data);
+  }catch(e){
+    $("content").innerHTML = '<div class="loading err">Hata: '+e.message+
+      '<br><span style="color:var(--muted)">Backend deploy edildi mi? Fonksiyon US dışı bir bölgede mi (Binance US IP\'lerini engeller)?</span></div>';
+    $("meta").textContent = "Bağlantı hatası";
+  }finally{ $("scan").disabled = false; }
+}
+
+function render(data){
+  const showAll = $("filter").value === "all";
+  let rows = data.rows || [];
+  if(!showAll) rows = rows.filter(x=>x.signal!=="NEUTRAL");
+
+  $("meta").innerHTML =
+    `Zaman: <b>${data.config.interval}</b>` +
+    ` &nbsp;·&nbsp; Taranan: <b>${data.counts.scanned}</b>` +
+    ` &nbsp;·&nbsp; Sinyal: <b>${data.counts.signals}</b>` +
+    ` &nbsp;·&nbsp; Güncelleme: ${new Date(data.generatedAt).toLocaleTimeString("tr-TR")}`;
+
+  if(!rows.length){ $("content").innerHTML = '<div class="loading">Bu eşiklerle sinyal bulunamadı. "Tümü"nü seçip listeyi görebilirsin.</div>'; return; }
+
+  const head = `<tr>
+    <th>Coin</th><th>Sinyal</th><th>Güç</th><th>Fiyat</th><th>24s %</th>
+    <th>RSI</th><th>ADX</th><th>ATR%</th><th>Kald.</th><th>SL</th><th>TP</th><th>Hacim</th></tr>`;
+  const body = rows.map(x=>{
+    const ch = x.change24h, chCls = ch>0?"pos":ch<0?"neg":"";
+    return `<tr>
+      <td><b>${x.symbol.replace("USDT","")}</b><span style="color:var(--muted)">USDT</span></td>
+      <td><span class="sig ${x.signal}">${x.signal}</span></td>
+      <td><span class="bar" style="width:${x.strength*12}px"></span> ${x.strength}</td>
+      <td>${fmtNum(x.price)}</td>
+      <td class="${chCls}">${ch>0?"+":""}${ch}%</td>
+      <td>${x.rsi}</td>
+      <td>${x.adx}</td>
+      <td>${x.atrPct}%</td>
+      <td>${x.signal!=="NEUTRAL"?x.leverage+"x":"—"}</td>
+      <td>${x.sl!=null?fmtNum(x.sl):"—"}</td>
+      <td>${x.tp!=null?fmtNum(x.tp):"—"}</td>
+      <td style="color:var(--muted)">${fmtVol(x.quoteVolume)}</td>
+    </tr>`;
+  }).join("");
+  $("content").innerHTML = `<table>${head}${body}</table>`;
+}
+
+$("scan").onclick = scan;
+$("tf").onchange = scan;
+$("filter").onchange = ()=>{ if(window.__last) render(window.__last); };
+$("auto").onchange = (e)=>{
+  if(e.target.checked){ timer = setInterval(scan, 60000); } else { clearInterval(timer); }
+};
+// son veriyi sakla (filtre değişiminde yeniden çizmek için)
+const _render = render;
+render = (d)=>{ window.__last = d; _render(d); };
+
+scan();
+</script>
+</body>
+</html>
